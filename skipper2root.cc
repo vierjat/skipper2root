@@ -158,7 +158,8 @@ int procSkipperImage(const char *inFile, const char *outF, const int opt = 0){
   splPixTree.Branch("y",    &y, "y/I");
   splPixTree.Branch("ohdu", &ohdu, "ohdu/I");
   splPixTree.Branch("nSpl",  &nSpl, "nSpl/I");
-  splPixTree.Branch("pix",  &(splPix[0]), "pix[nSpl]/D");
+  splPixTree.Branch("pix",   &(splPix[0]), "pix[nSpl]/D");
+  splPixTree.Branch("skPix", &pix, "skPix/D");
 
   for(int eI=1; eI<=nhdu; ++eI){  /* Main loop through each extension */
     
@@ -227,7 +228,12 @@ int procSkipperImage(const char *inFile, const char *outF, const int opt = 0){
         for (long j = 0; j < totpixSkp; ++j){
           x = j%imCols;
           y = j/imCols;
-          for (int s = 0; s < nSamples; ++s)splPix[s] = fullOutArray[j*nSamples + s];
+          pix = 0;
+          for (int s = 0; s < nSamples; ++s){
+            splPix[s] = fullOutArray[j*nSamples + s];
+            pix += splPix[s];
+          }
+          pix /= nSamples;
           splPixTree.Fill();
         }
         splPixTree.Write();
