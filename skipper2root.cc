@@ -4,6 +4,9 @@
 
 #include <iostream>
 #include <sstream>
+#include <cstdlib>
+#include <cerrno>
+#include <memory>
 
 #include <sys/time.h>
 #include <time.h>
@@ -26,18 +29,19 @@
 
 using namespace std;
 
-const long imCols  = 1000;
-const long ccdCols = 452*2;
-const long nIgnore = 3;
-const long nOS     = (imCols/2 - ccdCols/2)-nIgnore-1;
-const long lStart  = ccdCols/2+nIgnore;
-const long lEnd    = lStart+nOS;
-const long rStart  = imCols/2;
-const long rEnd    = rStart+nOS;
+const long imCols    = 1000;
+const long ccdCols   = 452*2;
+const long nIgnore   = 3;
+const long nOS       = (imCols/2 - ccdCols/2)-nIgnore-1;
+const long lOsStart  = ccdCols/2+nIgnore; // Left OS start
+const long lOsEnd    = lOsStart+nOS;        // Left OS end
+const long rOsStart  = imCols/2;          // Right OS start
+const long rOsEnd    = rOsStart+nOS;        // Right OS end
 
 const int  nMeanTrim = 4;
 
 const int kSaveSamplesFlag = 1;
+const int kZeroThrFlag     = 2;
 
 const int kMaxNSpl = 10000;
 
@@ -106,7 +110,9 @@ void printCopyHelp(const char *exeName, bool printFullHelp=false){
   cout << "\nUsage:\n";
   cout << "  "   << exeName << " <input file> -o <output filename> \n\n";
   cout << "\nOptions:\n";
-  cout << "  -s for saving the individual values of all the samples.\n\n";
+  cout << "  -s for saving the individual values of all the samples.\n";
+  cout << "  -d for overwriting the output file if it exist.\n\n";
+  cout << "  -d for overwriting the output file if it exist.\n\n";
   cout << normal;
   cout << blue;
   cout << "For any problems or bugs contact Javier Tiffenberg <javiert@fnal.gov>\n\n";
@@ -114,14 +120,16 @@ void printCopyHelp(const char *exeName, bool printFullHelp=false){
   cout << "==========================================================================\n\n";
 }
 
-int procSkipperImage(const char *inFile, const char *outF, const int opt = 0){
+int procSkipperImage(const char *inFile, const char *outF, const int opt = 0, const double zeroThr = 100000){
 
   const bool saveSamples = (opt & kSaveSamplesFlag);
+  const bool useZeroThr  = (opt & kZeroThrFlag);
 
-  /* Overwrite the output file if it already exist */
+  /* Do not overwrite the output file if it already exist */
   if(fileExist(outF)){
-    cout << yellow << "\nThe output file exist. " << normal;
-    deleteFile(outF);
+    cout << yellow << "\nThe output file exist.\n" << normal;
+    cout << red    << "Will NOT continue.\n" << normal;
+    return -10;
   }
 
   fitsfile *infptr;
@@ -197,20 +205,87 @@ int procSkipperImage(const char *inFile, const char *outF, const int opt = 0){
       const int nRows = naxes[1];
       ohdu = eI;
       
+
+      /* These are only used if kZeroThrFlag is set */ 
+      vector<double> lOsBaseLine(nRows);
+      vector<double> rOsBaseLine(nRows);
+      vector< vector<double> > lSkOsFirstPass(nRows, std::vector<double>(nOS,0) );
+      vector< vector<double> > rSkOsFirstPass(nRows, std::vector<double>(nOS,0) );
+
+      if(useZeroThr){
+        for (int s = 0; s < nSamples; ++s){
+          double lOsSplV[nOS];
+          double rOsSplV[nOS];
+          for (int r = 0; r < nRows; ++r){
+            for (long o = 0; o < nOS; ++o){
+              lOsSplV[o]=inArray[nSamples*(o+r*imCols+lOsStart)+s];
+              rOsSplV[o]=inArray[nSamples*(o+r*imCols+rOsStart)+s];
+            }
+
+            /* compute stable mean for the OS pixels */
+            double osAuxV[nOS];
+            // left side
+            partial_sort_copy(lOsSplV, lOsSplV+nOS, osAuxV, osAuxV+nOS);
+            double lMean = (nOS>2*nMeanTrim)? accumulate(osAuxV+nMeanTrim, osAuxV+(nOS-nMeanTrim), 0.0) : accumulate(osAuxV, osAuxV, 0.0);
+            lMean = (nOS>4)? lMean/(nOS-nMeanTrim*2) : lMean/nOS;
+            // right side
+            partial_sort_copy(rOsSplV, rOsSplV+nOS, osAuxV, osAuxV+nOS);
+            double rMean = (nOS>2*nMeanTrim)? accumulate(osAuxV+nMeanTrim, osAuxV+(nOS-nMeanTrim), 0.0) : accumulate(osAuxV, osAuxV, 0.0);
+            rMean = (nOS>4)? rMean/(nOS-nMeanTrim*2) : rMean/nOS;
+            
+            // subtract OS mean for each sample in the OS
+            for (int o = 0; o < nOS; ++o){
+              lSkOsFirstPass[r][o] += lOsSplV[o] - lMean;
+              rSkOsFirstPass[r][o] += rOsSplV[o] - rMean;
+            }
+          }
+        }
+     
+        for (int r = 0; r < nRows; ++r){
+          for (long o = 0; o < nOS; ++o){
+            lSkOsFirstPass[r][o] /= nSamples;
+            rSkOsFirstPass[r][o] /= nSamples;
+          }
+        }
+      }
+
       double osAuxV[nOS];
       for (int s = 0; s < nSamples; ++s){
         for (long j = 0; j < totpixSkp; ++j) outArray[j]=inArray[nSamples*j+s];
         for (int r = 0; r < nRows; ++r){
           double* rowPtr = outArray+imCols*r;
-          /* compute stable mean for the OS pixels */
-          // left side
-          partial_sort_copy(rowPtr+lStart, rowPtr+lEnd, osAuxV, osAuxV+nOS);
-          double lMean = (nOS>2*nMeanTrim)? accumulate(osAuxV+nMeanTrim, osAuxV+(nOS-nMeanTrim), 0.0) : accumulate(osAuxV, osAuxV, 0.0);
-          lMean = (nOS>4)? lMean/(nOS-nMeanTrim*2) : lMean/nOS;
-          // right side
-          partial_sort_copy(rowPtr+rStart, rowPtr+rEnd, osAuxV, osAuxV+nOS);
-          double rMean = (nOS>2*nMeanTrim)? accumulate(osAuxV+nMeanTrim, osAuxV+(nOS-nMeanTrim), 0.0) : accumulate(osAuxV, osAuxV, 0.0);
-          rMean = (nOS>4)? rMean/(nOS-nMeanTrim*2) : rMean/nOS;
+          double lMean = 0;
+          double rMean = 0;
+
+          if(useZeroThr){
+            int lNZero = 0;
+            int rNZero = 0;
+            for (long o = 0; o < nOS; ++o){
+              if(lSkOsFirstPass[r][o]<zeroThr){
+                lMean += rowPtr[lOsStart+o];
+                ++lNZero;
+              }
+              if(rSkOsFirstPass[r][o]<zeroThr){
+                rMean += rowPtr[rOsStart+o];
+                ++rNZero;
+              }
+            }
+
+            lMean /= lNZero;
+            rMean /= rNZero;
+          }
+          else{
+            /* compute stable mean for the OS pixels */
+            // left side
+            partial_sort_copy(rowPtr+lOsStart, rowPtr+lOsEnd, osAuxV, osAuxV+nOS);
+            lMean = (nOS>2*nMeanTrim)? accumulate(osAuxV+nMeanTrim, osAuxV+(nOS-nMeanTrim), 0.0) : accumulate(osAuxV, osAuxV, 0.0);
+            lMean = (nOS>4)? lMean/(nOS-nMeanTrim*2) : lMean/nOS;
+            // right side
+            partial_sort_copy(rowPtr+rOsStart, rowPtr+rOsEnd, osAuxV, osAuxV+nOS);
+            rMean = (nOS>2*nMeanTrim)? accumulate(osAuxV+nMeanTrim, osAuxV+(nOS-nMeanTrim), 0.0) : accumulate(osAuxV, osAuxV, 0.0);
+            rMean = (nOS>4)? rMean/(nOS-nMeanTrim*2) : rMean/nOS;
+          }
+
           // subtract OS mean for each sample
           for (int c = 0; c < imCols/2; ++c){
             *(rowPtr+c) -= lMean;
@@ -314,13 +389,15 @@ void checkArch(){
   }
 }
 
-int processCommandLineArgs(const int argc, char *argv[], string &inFile, string &outFile, int &flags){
+int processCommandLineArgs(const int argc, char *argv[], string &inFile, string &outFile, int &flags, double &zeroThr){
   
   if(argc == 1) return 1;
   
-  bool outFileFlag = false;
+  zeroThr            = 100000;
+  bool outFileFlag   = false;
+  bool owOutFileFlag = false;
   int opt=0;
-  while ( (opt = getopt(argc, argv, "i:o:sqQhH?")) != -1) {
+  while ( (opt = getopt(argc, argv, "i:o:z:dsqQhH?")) != -1) {
     switch (opt) {
     case 'o':
       if(!outFileFlag){
@@ -332,8 +409,27 @@ int processCommandLineArgs(const int argc, char *argv[], string &inFile, string 
         return 2;
       }
       break;
+    case 'd': /* overwrite output fie is exist */
+      owOutFileFlag = true;
+      break;
     case 's':
       flags |= kSaveSamplesFlag;
+      break;
+    case 'z':
+      if(zeroThr==100000){
+        flags |= kZeroThrFlag;
+        char * e;
+        errno = 0;
+        zeroThr = std::strtod(optarg, &e);
+        if (*e != '\0' /* didn't consume the entire string */ || errno != 0 /* error, overflow or underflow */ ){
+          cerr << red << "\nError reading zeroThr value.\nWill NOT continue.\n\n"  << normal;
+          return 3;
+        }
+      }
+      else{
+        cerr << red << "\nError, can not set more than one zeroThr!\nWill NOT continue.\n\n"  << normal;
+        return 4;
+      }
       break;
     case 'Q':
     case 'q':
@@ -367,6 +463,25 @@ int processCommandLineArgs(const int argc, char *argv[], string &inFile, string 
     cout << red << "\nError reading input file: " << inFile <<"\nThe file doesn't exist!\n\n" << normal;
     return 1;
   }
+
+  if(outFile == inFile){
+    cerr << red << "\nError: The output file can't be the input file!\n" << normal;
+    cerr << red << "Will NOT continue\n\n" << normal;
+    return -102;
+  }
+
+  /* Overwrite the output file if it already exist */
+  if(fileExist(outFile.c_str())){
+    cout << yellow << "\nThe output file exist.\n" << normal;
+    if(owOutFileFlag){
+      cout << yellow << "Will overwrite the output file.\n\n" << normal;
+      deleteFile(outFile.c_str());
+    }
+    else{
+      cout << yellow << "Please provide a different name or use the \"-d\" option.\n\n" << normal;
+      return 5;
+    }
+  }
   
   return 0;
 }
@@ -377,11 +492,13 @@ int main(int argc, char *argv[])
   double dif;
   time (&start);
 
+
   string outFile;
   string inFile;
   int opt = 0;
+  double zeroThr = -1;
   
-  int returnCode = processCommandLineArgs( argc, argv, inFile, outFile, opt);
+  int returnCode = processCommandLineArgs( argc, argv, inFile, outFile, opt, zeroThr);
   if(returnCode!=0){
     if(returnCode == 1) printCopyHelp(argv[0],true);
     if(returnCode == 2) printCopyHelp(argv[0]);
@@ -394,7 +511,7 @@ int main(int argc, char *argv[])
     cout << bold << "\nThe output will be saved in the file:\n\t" << normal << outFile << endl;
   }
 
-  int status  = procSkipperImage(inFile.c_str(), outFile.c_str(), opt);
+  int status  = procSkipperImage(inFile.c_str(), outFile.c_str(), opt, zeroThr);
 
   if (status != 0){ 
     fits_report_error(stderr, status);

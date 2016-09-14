@@ -1,7 +1,7 @@
 CFITSIO = $(FITSIOROOT)
 CPP = g++
 CC = gcc
-CFLAGS = -Wall -I$(CFITSIO) $(shell root-config --cflags)
+CFLAGS = -Wall -I$(CFITSIO) $(shell root-config --cflags) -std=c++11
 LIBS = -L$(CFITSIO) -lcfitsio -lm $(shell root-config --libs)
 GLIBS = 
 GLIBS += 
