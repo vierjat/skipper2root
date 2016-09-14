@@ -1,7 +1,7 @@
 CFITSIO = $(FITSIOROOT)
 CPP = g++
 CC = gcc
-GCCNEWERTHAN47 := $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 4.7)
+GCCNEWERTHAN47 := $(shell expr `gcc -dumpversion` \>= 4.7)
 CFLAGS = -Wall -I$(CFITSIO) $(shell root-config --cflags)
 LIBS = -L$(CFITSIO) -lcfitsio -lm $(shell root-config --libs)
 GLIBS = 
