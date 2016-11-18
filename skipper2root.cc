@@ -100,7 +100,7 @@ void printCopyHelp(const char *exeName, bool printFullHelp=false){
     cout << "This program process the raw Skipper CCD data. It computes overscan\n"
          << "mean for each sample and subtracts it line by line.\n"
          << "The output file will be a ROOT image containing a TTree with the pixels\n"
-         << "values averaged over all the samples (after subtration of the corresponding\n"
+         << "values averaged over all the samples (after subtraction of the corresponding\n"
          << "overscan value). It's also possible to save an additional TTree that will\n"
          << "contain the individual values of all the samples.\n";
     cout << normal;
@@ -112,7 +112,7 @@ void printCopyHelp(const char *exeName, bool printFullHelp=false){
   cout << "\nOptions:\n";
   cout << "  -s for saving the individual values of all the samples.\n";
   cout << "  -d for overwriting the output file if it exist.\n\n";
-  cout << "  -d for overwriting the output file if it exist.\n\n";
+  cout << "  -z <zero threshold in ADC> for using pixels with skPix vale smaller than zeroThr in the OS mean.\n\n";
   cout << normal;
   cout << blue;
   cout << "For any problems or bugs contact Javier Tiffenberg <javiert@fnal.gov>\n\n";
@@ -152,12 +152,14 @@ int procSkipperImage(const char *inFile, const char *outF, const int opt = 0, co
   Int_t y;
   Int_t ohdu;
   Double_t pix;
+  Double_t osMean;
 
   TTree skPixTree("skPixTree", "skPixTree");
   skPixTree.Branch("x",    &x, "x/I");
   skPixTree.Branch("y",    &y, "y/I");
   skPixTree.Branch("ohdu", &ohdu, "ohdu/I");
   skPixTree.Branch("pix",  &pix, "pix/D");
+  skPixTree.Branch("osMean",  &osMean, "osMean/D");
 
   Int_t nSpl;
   Double_t splPix[kMaxNSpl];
@@ -207,8 +209,6 @@ int procSkipperImage(const char *inFile, const char *outF, const int opt = 0, co
       
 
       /* These are only used if kZeroThrFlag is set */ 
-      vector<double> lOsBaseLine(nRows);
-      vector<double> rOsBaseLine(nRows);
       vector< vector<double> > lSkOsFirstPass(nRows, std::vector<double>(nOS,0) );
       vector< vector<double> > rSkOsFirstPass(nRows, std::vector<double>(nOS,0) );
 
@@ -223,14 +223,14 @@ int procSkipperImage(const char *inFile, const char *outF, const int opt = 0, co
             }
 
             /* compute stable mean for the OS pixels */
-            double osAuxV[nOS];
+            double osV[nOS];
             // left side
-            partial_sort_copy(lOsSplV, lOsSplV+nOS, osAuxV, osAuxV+nOS);
-            double lMean = (nOS>2*nMeanTrim)? accumulate(osAuxV+nMeanTrim, osAuxV+(nOS-nMeanTrim), 0.0) : accumulate(osAuxV, osAuxV, 0.0);
+            partial_sort_copy(lOsSplV, lOsSplV+nOS, osV, osV+nOS);
+            double lMean = (nOS>2*nMeanTrim)? accumulate(osV+nMeanTrim, osV+(nOS-nMeanTrim), 0.0) : accumulate(osV, osV, 0.0);
             lMean = (nOS>4)? lMean/(nOS-nMeanTrim*2) : lMean/nOS;
             // right side
-            partial_sort_copy(rOsSplV, rOsSplV+nOS, osAuxV, osAuxV+nOS);
-            double rMean = (nOS>2*nMeanTrim)? accumulate(osAuxV+nMeanTrim, osAuxV+(nOS-nMeanTrim), 0.0) : accumulate(osAuxV, osAuxV, 0.0);
+            partial_sort_copy(rOsSplV, rOsSplV+nOS, osV, osV+nOS);
+            double rMean = (nOS>2*nMeanTrim)? accumulate(osV+nMeanTrim, osV+(nOS-nMeanTrim), 0.0) : accumulate(osV, osV, 0.0);
             rMean = (nOS>4)? rMean/(nOS-nMeanTrim*2) : rMean/nOS;
             
             // subtract OS mean for each sample in the OS
@@ -248,11 +248,16 @@ int procSkipperImage(const char *inFile, const char *outF, const int opt = 0, co
           }
         }
       }
+      /* End of first look in zeroThr processing */
 
+
+      /* Subtract OS mean for each sample */
       double osAuxV[nOS];
-      for (int s = 0; s < nSamples; ++s){
+      for (int s = 0; s < nSamples; ++s){ // loop on samples
+
         for (long j = 0; j < totpixSkp; ++j) outArray[j]=inArray[nSamples*j+s];
-        for (int r = 0; r < nRows; ++r){
+
+        for (int r = 0; r < nRows; ++r){ // loop on rows
           double* rowPtr = outArray+imCols*r;
           double lMean = 0;
           double rMean = 0;
@@ -286,11 +291,12 @@ int procSkipperImage(const char *inFile, const char *outF, const int opt = 0, co
             rMean = (nOS>4)? rMean/(nOS-nMeanTrim*2) : rMean/nOS;
           }
 
-          // subtract OS mean for each sample
-          for (int c = 0; c < imCols/2; ++c){
+          // subtract OS mean for each pixel on the row for the current sample
+          for (int c = 0; c < imCols/2; ++c){ // loop on the pixels on the row
             *(rowPtr+c) -= lMean;
             *(rowPtr+imCols/2+c) -= rMean;
           }
+
         }
         for (long j = 0; j < totpixSkp; ++j) outMeanArray[j] += outArray[j];
         for (long j = 0; j < totpixSkp; ++j) fullOutArray[j*nSamples+s] = outArray[j];
